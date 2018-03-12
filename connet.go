@@ -6,6 +6,10 @@ import (
 
 	"io"
 	"math/rand"
+	"net"
+	"time"
+	"sync"
+	"bufio"
 )
 
 //Close codes defined in RFC 6455
@@ -164,7 +168,7 @@ var (
 func newMaskKey() [4]byte {
  // new mask key
    n := rand.Uint32()
-   return [4]byte{byte(n),byte(n >> 8),byte(n >> 16),byte(n >> 24)}
+   return [4]byte{byte(n),byte(n >> 8),byte(n >> 16),byte(n >> 24)} // bit operation
 
 }
 
@@ -201,4 +205,153 @@ var validReceivedCloseCodes = map[int]bool {
 
 func isValidReceivedCloseCode(code int) bool {
 	return validReceivedCloseCodes[code] || (code >= 3000 && code <= 4999)
+}
+
+
+
+// wensocket connection
+type Conn struct {
+	conn             net.Conn // interface object
+	isServer         bool
+	subprotocol      string  //subprotocol
+
+	//write
+	mu                chan bool
+	writerBuf         []byte
+	writeDeadline     time.Time
+	writer            io.WriteCloser
+	isWriting         bool
+
+	writeErrMu        sync.Mutex
+	writeErr          error
+
+
+
+	// Read
+	reader            io.ReadCloser
+	readErr           error
+	br                *bufio.Reader
+	readRemaining     int64
+	readFinal         bool  //true  has continuation frame
+    readLength        int64  // message size
+    readLimit         int64  //Mxa meaasge size'
+    readMaskPos       int    //Opcode
+    readMaskKey       [4]byte
+
+    handlePong        func(string) error
+    handlePing        func(string) error
+    handleClose       func(int ,string) error
+    readErrCount      int
+
+
+	readDecompress         bool // whether last read frame had RSV1 set
+	//newDecompressionReader func(io.Reader) io.ReadCloser
+
+}
+
+func newConn(conn net.Conn,isServer bool,readBufferSize int,writeBufferSize int) *Conn {
+	return newConnBRD(conn,isServer,readBufferSize,writeBufferSize,nil)
+}
+
+type WriteHook struct {
+	p []byte
+}
+
+func (w *WriteHook) Write(p []byte) (n int, err error){
+	w.p = p //write is copy
+	return len(p),nil
+}
+
+func newConnBRD(conn net.Conn,isServer bool,readBufferSize int,writeBufferSize int, brw *bufio.ReadWriter ) *Conn{
+	//crate Read or Write struct Conn
+	//bufio.ReadWriter is struct data
+	mu := make(chan bool, 1)
+	mu <- true
+	var br *bufio.Reader // binary reader
+    if readBufferSize == 0 && brw != nil && brw.Reader != nil {
+    	brw.Reader.Reset(conn)
+    	if p,err := brw.Reader.Peek(0);err == nil && cap(p) >= 256 { // Peek() return slice, this time p is nil
+            br = brw.Reader
+		}
+	}
+
+	if br == nil {
+		if readBufferSize == 0 {
+			readBufferSize = defaultReadBufferSize
+		}
+
+		if readBufferSize < maxControlFramePayloadSize {
+			readBufferSize = maxControlFramePayloadSize
+		}
+
+		br = bufio.NewReaderSize(conn,readBufferSize)
+	}
+
+	var writeBuf []byte
+	if writeBufferSize == 0 && brw != nil && brw.Writer != nil {
+		var wh WriteHook
+		brw.Writer.Reset(&wh)
+		brw.Writer.WriteByte(0)//writes  a single byte,why?
+		brw.Flush()
+		pLength := cap(wh.p)
+		if  pLength >= maxFrameHeaderSize + 256 { // TODO why?
+			writeBuf = wh.p[:pLength]
+		}
+	}
+
+	if writeBuf == nil {
+		if writeBufferSize == 0{
+			writeBufferSize = defaultWriteBuffersize
+		}
+		writeBuf = make([]byte,writeBufferSize + maxFrameHeaderSize)
+	}
+    c := &Conn{
+    	isServer:isServer,
+    	conn:conn,
+    	br:br,
+    	mu:mu,
+    	readFinal:true,
+        writerBuf:writeBuf,
+	}
+
+	return c
+}
+
+
+func (c *Conn) Subprotocol() string {
+	return c.subprotocol
+}
+
+func (c *Conn) Close() error {
+	return c.conn.Close()
+}
+
+func (c *Conn) LocalAdrr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+
+func (c *Conn) RemoteAddr () net.Addr {
+	return c.conn.RemoteAddr()
+}
+
+
+func hideTempErr (err error) error {
+	// hide temp error
+	if e,ok := err.(net.Error);ok && e.Temporary() {
+		err = &netError{msg:e.Error(),timeout:e.Timeout()}
+	}
+	return err
+}
+
+// write
+
+func (c *Conn) WriteFatal (err error) error {
+	err = hideTempErr(err)
+	c.writeErrMu.Lock()
+	if c.writeErr == nil {
+		c.writeErr = err
+	}
+	c.writeErrMu.Unlock()
+	return err
 }
