@@ -468,6 +468,36 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 }
 
 
+type messageWriter struct {
+	c         *Conn
+	compress  bool  // TODO do not know
+	pos       int  // writebuff offset
+	frameType int
+	err       error
+}
+
+
+func (message *messageWriter) Write(p []byte) (n int ,err error){
+
+}
+
+func (message *messageWriter) Close() error {
+	  if message.err != nil {
+	  	return message.err
+	  }
+
+}
+
 func (c *Conn) NextWriter(messageType int ) (io.WriteCloser,error){
+	// if connection frame
+	if err := c.preWrite(messageType); err != nil {
+		return nil,err
+	}
+    mw := &messageWriter{
+    	c:     c,
+    	frameType: messageType,
+    	pos: maxFrameHeaderSize,
+	}
+	c.writer = mw // must define function Write and Close
 
 }
