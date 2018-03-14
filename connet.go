@@ -58,7 +58,7 @@ const (
 	maskBit    = 1 << 7
 
 	maxFrameHeaderSize         = 2 + 8 + 4  //not inculde payload data,Fixde header + data max length + masking key
-    maxControlFramePayloadSize = 125
+    maxControlFramePayloadSize = 125  // RFC Section 5.2, controlframe payloadsize <= 125, and can not be cut
 
     defaultReadBufferSize  = 4096
     defaultWriteBuffersize = 4096
@@ -212,7 +212,7 @@ func isValidReceivedCloseCode(code int) bool {
 // wensocket connection
 type Conn struct {
 	conn             net.Conn // interface object
-	isServer         bool
+	isServer         bool     //is server to client?
 	subprotocol      string  //subprotocol
 
 	//write
@@ -347,6 +347,7 @@ func hideTempErr (err error) error {
 // write
 
 func (c *Conn) WriteFatal (err error) error {
+	// mutex lock
 	err = hideTempErr(err)
 	c.writeErrMu.Lock()
 	if c.writeErr == nil {
@@ -354,4 +355,119 @@ func (c *Conn) WriteFatal (err error) error {
 	}
 	c.writeErrMu.Unlock()
 	return err
+}
+
+
+
+func (c *Conn) write(frameType int, deadline time.Time,buf0 []byte,buf1 []byte) error {
+	// TODO hard to understand
+	<-c.mu
+	defer func() {c.mu <- true}()
+
+	c.writeErrMu.Lock()
+	err := c.writeErr
+	c.writeErrMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	c.conn.SetWriteDeadline(deadline)
+	if len(buf1) == 0{
+		_,err = c.conn.Write(buf0)
+	}else{
+
+	}
+
+   return err
+}
+
+func (c *Conn) preWrite(messageType int) error {
+   // check connection status before writing
+   if c.writeErr != nil {
+   	    c.conn.Close()
+   	    c.writer = nil
+   }
+
+   if !isControl(messageType)  && !isData(messageType) {
+   	    return errBadWriteOpCode
+   }
+   c.writeErrMu.Lock()
+   err := c.writeErr
+   c.writeErrMu.Unlock()
+   return err
+
+}
+
+
+//write control Frame
+func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) error {
+    if !isControl(messageType){
+    	return errBadWriteOpCode
+	}
+
+	data_len := len(data)
+    if data_len > maxControlFramePayloadSize {
+    	return errInvalidControlFrame
+	}
+
+	b0 := byte(messageType) | finBit
+	b1 := byte(data_len)
+
+	if !c.isServer { // client to server ,Mask bit must be 1
+		b1 |= maskBit
+	}
+
+	buf := make([]byte,0,maxFrameHeaderSize + maxControlFramePayloadSize) // ControlFrmae max size
+	buf = append(buf,b0,b1)
+
+	if c.isServer { // if server to client ,Mask-bit is 0
+		buf = append(buf,data...)
+	}else{
+        newmask := newMaskKey()
+        buf = append(buf,newmask[:]...)
+        buf = append(buf,data...)
+	}
+
+	d := time.Hour * 1000
+	if !deadline.IsZero() {
+        d = deadline.Sub(time.Now()) //计算时间差
+        if d < 0 {
+        	return errWriteTimeout
+		}
+	}
+
+	timer := time.NewTimer(d) //timer
+	select { // multiplex,can recept or send
+	case <-c.mu: //recept
+		timer.Stop()
+
+	case <-timer.C:
+		return errWriteTimeout
+
+	}
+	defer func() {c.mu <- true} ()
+
+	c.writeErrMu.Lock()
+	err := c.writeErr
+    c.writeErrMu.Unlock()
+
+    if err != nil {
+    	return err
+	}
+
+	c.conn.SetWriteDeadline(deadline)
+	_,err = c.conn.Write(buf)  // TODO have some question at this
+	if err != nil {  //write error info to struct
+		return c.WriteFatal(err)
+	}
+
+	if messageType == CloseMessage {
+		c.WriteFatal(ErrCloseSent)
+	}
+    return err
+}
+
+
+func (c *Conn) NextWriter(messageType int ) (io.WriteCloser,error){
+
 }
