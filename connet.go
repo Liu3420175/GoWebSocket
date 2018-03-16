@@ -476,6 +476,48 @@ type messageWriter struct {
 	err       error
 }
 
+func (message *messageWriter) fatal(err error) error {
+	 if message.err != nil{
+	 	message.err = err
+	 	message.c.writer = nil
+	 }
+	 return err
+}
+
+func (message *messageWriter) flushFrame(final bool,extra []byte) error {
+	//TODO
+    c := message.c
+    length := message.pos - maxFrameHeaderSize + len(extra)
+
+    if isControl(message.frameType) && (!final || length > maxControlFramePayloadSize){
+    	return message.fatal(errInvalidControlFrame)
+	}
+
+	b0 := byte(message.frameType)
+	if final {
+		b0 |= finBit
+	}
+
+	if message.compress {
+		b0 |= rsv1Bit
+	}
+
+	message.compress = false
+
+	b1 := byte(0)
+
+	if !c.isServer {
+		b1 |= maskBit
+	}
+
+	framePos := 0// byte of frame start
+
+	if c.isServer{
+		// if is server ,
+		framePos = 4   // TODO have some question
+	}
+
+}
 
 func (message *messageWriter) Write(p []byte) (n int ,err error){
 
