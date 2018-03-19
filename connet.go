@@ -10,6 +10,7 @@ import (
 	"time"
 	"sync"
 	"bufio"
+	"encoding/binary"
 )
 
 //Close codes defined in RFC 6455
@@ -510,13 +511,25 @@ func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 		b1 |= maskBit
 	}
 
-	framePos := 0// byte of frame start
+	framePos := 0// byte of frame start，but excluding bit0,bit1 and so on ,start ar masking-key
+	             // if it has mask-key,payload-data start after masking-key
 
 	if c.isServer{
 		// if is server ,
-		framePos = 4   // TODO have some question
+		framePos = 4
 	}
 
+	switch  {
+	case length >= 65638 : // if payload-len = 127,length >= 2^16
+        c.writerBuf[framePos] = b0
+        c.writerBuf[framePos + 1] = b1 | 127
+        binary.BigEndian.PutUint64(c.writerBuf[framePos+2:],uint64(length))//网络字节，二进制流,写入长度信息，因为是64位表示长度，所以用PutUnit64
+	case length > 125 : // payload-len = 126
+	    framePos += 6 // TODO why?
+	    c.writerBuf[framePos + 1] = b1 | 126
+	    binary.BigEndian.PutUint16(c.writerBuf[framePos+2:],uint16((length)))
+
+	}
 }
 
 func (message *messageWriter) Write(p []byte) (n int ,err error){
