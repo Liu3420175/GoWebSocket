@@ -381,10 +381,17 @@ func (c *Conn) write(frameType int, deadline time.Time,buf0 []byte,buf1 []byte) 
 	if len(buf1) == 0{
 		_,err = c.conn.Write(buf0)
 	}else{
-
+         err = c.writeBufs(buf0,buf1)
 	}
 
-   return err
+	if err != nil {
+		return c.WriteFatal(err)
+	}
+
+	if frameType == CloseMessage {
+		c.WriteFatal(ErrCloseSent)
+	}
+   return nil
 }
 
 func (c *Conn) preWrite(messageType int) error {
@@ -477,7 +484,7 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 type messageWriter struct {
 	c         *Conn
 	compress  bool  // TODO do not know
-	pos       int  // end of data in writeBuf. TODO 这个字段的含义很重要
+	pos       int  // end of data in writeBuf
 	frameType int
 	err       error
 }
@@ -522,11 +529,11 @@ func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 	if c.isServer{
 		// if is server ,
 		framePos = 4 // TODO why? 因为在创建Conn对象初始化的时候，writerBuf的初始化是按照header的最大长度来初始化的，所以它这里的处理方法是，若实际要使用的header长度小于
-		             // TODO 最大长度，前面的忽略掉，从差值处开始格式化数据
+		             // TODO 最大长度，前面的忽略掉，从差值处开始格式化数据，这也是一种很巧妙的处理方式
 	}
 
 	switch  {
-	case length >= 65638 : // if payload-len = 127,length >= 2^16
+	case length >= 65536 : // if payload-len = 127,length >= 2^16
         c.writerBuf[framePos] = b0
         c.writerBuf[framePos + 1] = b1 | 127
         binary.BigEndian.PutUint64(c.writerBuf[framePos+2:],uint64(length))//转成网络字节，因为是64位表示长度，所以用PutUnit64，将length按照64位规则写入writerBuf里
@@ -578,6 +585,24 @@ func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 	return nil
 }
 
+
+func (message *messageWriter) ncopy(max int) (int , error) {
+	n := len(message.c.writerBuf) - message.pos // start bit of payload-data
+	if n <= 0{
+		if err := message.flushFrame(false,nil);err != nil { //rewrite header
+			return 0,err
+		}
+		n = len(message.c.writerBuf) - message.pos
+	}
+
+	if n > max {
+		n = max
+	}
+	return n,nil
+
+
+}
+
 func (message *messageWriter) Write(p []byte) (n int ,err error){
 
 }
@@ -586,6 +611,7 @@ func (message *messageWriter) Close() error {
 	  if message.err != nil {
 	  	return message.err
 	  }
+	  return nil
 
 }
 
