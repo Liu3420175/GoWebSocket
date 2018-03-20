@@ -359,6 +359,11 @@ func (c *Conn) WriteFatal (err error) error {
 }
 
 
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	 c.writeDeadline = t
+	 return nil
+}
+
 
 func (c *Conn) write(frameType int, deadline time.Time,buf0 []byte,buf1 []byte) error {
 	// TODO hard to understand
@@ -472,7 +477,7 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 type messageWriter struct {
 	c         *Conn
 	compress  bool  // TODO do not know
-	pos       int  // writebuff offset
+	pos       int  // end of data in writeBuf. TODO 这个字段的含义很重要
 	frameType int
 	err       error
 }
@@ -486,7 +491,7 @@ func (message *messageWriter) fatal(err error) error {
 }
 
 func (message *messageWriter) flushFrame(final bool,extra []byte) error {
-	//TODO
+
     c := message.c
     length := message.pos - maxFrameHeaderSize + len(extra)
 
@@ -511,25 +516,66 @@ func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 		b1 |= maskBit
 	}
 
-	framePos := 0// byte of frame start，but excluding bit0,bit1 and so on ,start ar masking-key
-	             // if it has mask-key,payload-data start after masking-key
+	framePos := 0// Assume that the frame starts at beginning of c.writeBuf.
+
 
 	if c.isServer{
 		// if is server ,
-		framePos = 4
+		framePos = 4 // TODO why? 因为在创建Conn对象初始化的时候，writerBuf的初始化是按照header的最大长度来初始化的，所以它这里的处理方法是，若实际要使用的header长度小于
+		             // TODO 最大长度，前面的忽略掉，从差值处开始格式化数据
 	}
 
 	switch  {
 	case length >= 65638 : // if payload-len = 127,length >= 2^16
         c.writerBuf[framePos] = b0
         c.writerBuf[framePos + 1] = b1 | 127
-        binary.BigEndian.PutUint64(c.writerBuf[framePos+2:],uint64(length))//网络字节，二进制流,写入长度信息，因为是64位表示长度，所以用PutUnit64
+        binary.BigEndian.PutUint64(c.writerBuf[framePos+2:],uint64(length))//转成网络字节，因为是64位表示长度，所以用PutUnit64，将length按照64位规则写入writerBuf里
 	case length > 125 : // payload-len = 126
-	    framePos += 6 // TODO why?
+	    framePos += 6
+	    c.writerBuf[framePos] = b0
 	    c.writerBuf[framePos + 1] = b1 | 126
 	    binary.BigEndian.PutUint16(c.writerBuf[framePos+2:],uint16((length)))
-
+	default:
+        framePos += 8
+        c.writerBuf[framePos] = b0
+        c.writerBuf[framePos+1] = b1 | byte(length)
 	}
+
+	if !c.isServer {
+		maskkey := newMaskKey()
+		copy(c.writerBuf[maxFrameHeaderSize-4:],maskkey[:])
+		//maskBytes(key, 0, c.writeBuf[maxFrameHeaderSize:w.pos])
+		if len(extra) > 0{
+			return c.WriteFatal(errors.New("websocket : internal error,extra used in client mode"))
+		}
+	}
+
+	if c.isWriting {
+		panic("concurrent write to websocket connection")
+	}
+
+	c.isWriting = true
+
+	err := c.write(message.frameType,c.writeDeadline,c.writerBuf[framePos:message.pos],extra)
+
+	if !c.isWriting {
+		panic("concurrent write to websocket connection")
+	}
+
+	c.isWriting = false
+
+	if err != nil {
+		return message.fatal(err)
+	}
+
+	if final {
+		c.writer = nil
+		return nil
+	}
+
+	message.pos = maxFrameHeaderSize
+	message.frameType = continuationFrame
+	return nil
 }
 
 func (message *messageWriter) Write(p []byte) (n int ,err error){
