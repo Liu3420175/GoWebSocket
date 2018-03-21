@@ -500,7 +500,7 @@ func (message *messageWriter) fatal(err error) error {
 func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 
     c := message.c
-    length := message.pos - maxFrameHeaderSize + len(extra)
+    length := message.pos - maxFrameHeaderSize + len(extra) //
 
     if isControl(message.frameType) && (!final || length > maxControlFramePayloadSize){
     	return message.fatal(errInvalidControlFrame)
@@ -580,6 +580,7 @@ func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 		return nil
 	}
 
+	// setting next frame
 	message.pos = maxFrameHeaderSize
 	message.frameType = continuationFrame
 	return nil
@@ -587,7 +588,8 @@ func (message *messageWriter) flushFrame(final bool,extra []byte) error {
 
 
 func (message *messageWriter) ncopy(max int) (int , error) {
-	n := len(message.c.writerBuf) - message.pos // start bit of payload-data
+	// TODO what to do ?copy?
+	n := len(message.c.writerBuf) - message.pos //判断当前写缓存长度与消息当前偏移的差
 	if n <= 0{
 		if err := message.flushFrame(false,nil);err != nil { //rewrite header
 			return 0,err
@@ -604,13 +606,60 @@ func (message *messageWriter) ncopy(max int) (int , error) {
 }
 
 func (message *messageWriter) Write(p []byte) (n int ,err error){
+ // write p to conn
+    if message.err != nil{
+    	return 0,message.err
+	}
 
+	if len(p) > 2*len(message.c.writerBuf) && message.c.isServer { // TODO why?
+		err := message.flushFrame(false, p)
+		if err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+
+	nn := len(p)
+	if len(p) > 0 {
+		n,err := message.ncopy(len(p))
+		if err != nil {
+			return 0,err
+		}
+		copy(message.c.writerBuf[message.pos:],p[:n])
+		message.pos += n
+		p = p[n:]
+	}
+	return nn,nil
+
+}
+
+
+
+func (message *messageWriter) WriteStrings(p string) (int ,error ) {
+	if message.err != nil {
+		return 0 , message.err
+	}
+
+	nn := len(p)
+	if len(p) > 0 {
+		n , err := message.ncopy(len(p))
+		if err != nil {
+			return 0,err
+		}
+		copy(message.c.writerBuf[message.pos:],p[:n])
+		p = p[n:]
+	}
+	return nn , nil
 }
 
 func (message *messageWriter) Close() error {
 	  if message.err != nil {
 	  	return message.err
 	  }
+	  if err:= message.flushFrame(true,nil);err != nil {
+	  	return err
+	  }
+	  message.err = errWriteClosed
 	  return nil
 
 }
@@ -627,4 +676,5 @@ func (c *Conn) NextWriter(messageType int ) (io.WriteCloser,error){
 	}
 	c.writer = mw // must define function Write and Close
 
+	return c.writer,nil
 }
