@@ -225,7 +225,9 @@ type Conn struct {
 
 	writeErrMu        sync.Mutex
 	writeErr          error
-
+	enableWriteCompression bool
+	compressionLevel       int
+	newCompressionWriter   func(io.WriteCloser, int) io.WriteCloser
 
 
 	// Read
@@ -652,6 +654,40 @@ func (message *messageWriter) WriteStrings(p string) (int ,error ) {
 	return nn , nil
 }
 
+
+func (message *messageWriter) ReadForm(r io.Reader) (nn int64, err error) {
+    // read conn bufer
+    if message.err != nil {
+    	return 0,message.err
+	}
+
+	for {
+		if message.pos == len(message.c.writerBuf) {
+			err = message.flushFrame(false,nil)
+			if err != nil {
+				break
+			}
+		}
+		var n int
+		n, err = r.Read(message.c.writerBuf[message.pos:])
+		message.pos += n
+		nn += int64(n)
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			break
+		}
+	}
+	return nn,err
+}
+
+
+
+//func (c *Conn) WritePreparedMessage(pm *Prep)
+
+
+
 func (message *messageWriter) Close() error {
 	  if message.err != nil {
 	  	return message.err
@@ -678,3 +714,38 @@ func (c *Conn) NextWriter(messageType int ) (io.WriteCloser,error){
 
 	return c.writer,nil
 }
+
+
+func (c *Conn) WriteMessage(messageType int,data []byte) error {
+
+	if c.isServer && (c.newCompressionWriter == nil || !c.enableWriteCompression) {
+
+		if err := c.preWrite(messageType) ; err != nil {
+			return err
+		}
+		mw := messageWriter{c:c,frameType:messageType,pos:maxFrameHeaderSize}
+		n := copy(c.writerBuf[mw.pos:],data)
+		mw.pos += n
+		data = data[n:]
+		return mw.flushFrame(true,data) // TODO why?just one frame?
+	}
+
+	message , err := c.NextWriter(messageType)
+    if err != nil {
+    	return err
+	}
+
+	if _, err := message.Write(data) ; err != nil {
+		return err
+	}
+	return message.Close()
+}
+
+
+
+
+//Read method
+
+
+
+
