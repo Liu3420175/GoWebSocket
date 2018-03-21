@@ -421,7 +421,7 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 	}
 
 	data_len := len(data)
-    if data_len > maxControlFramePayloadSize {
+    if data_len > maxControlFramePayloadSize {//控制信息不能有继续帧
     	return errInvalidControlFrame
 	}
 
@@ -747,5 +747,53 @@ func (c *Conn) WriteMessage(messageType int,data []byte) error {
 //Read method
 
 
+type messageReader struct {
+	c *Conn
+}
 
 
+func (message *messageReader) Close() error{
+	return nil
+}
+
+
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+
+func (c *Conn) setReadLimit(limit int64) {
+     c.readLimit = limit
+}
+
+
+func (c *Conn) CloseHandler() func(code int ,text string) error {
+	return c.handleClose
+}
+
+func (c *Conn) handleProtocolError(message string) error {
+	return nil
+}
+
+func (c *Conn) SetCloseHandler( h func(code int ,text string) error) {
+	 if h == nil {
+	 	h = func(code int ,text string) error {
+	 		message := FormatCloseMeaasge(code,"")
+
+		}
+	 }
+}
+
+
+func FormatCloseMeaasge(closeCode int,text string) []byte {
+	//格式化关闭状态码
+	if closeCode == CloseNoStatusReceived {
+		return []byte{}
+	}
+	buf := make([]byte,len(text) +2)
+	binary.BigEndian.PutUint16(buf,uint16(closeCode))
+	copy(buf[2:], text)
+	return buf
+
+   return buf
+}
