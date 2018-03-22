@@ -753,6 +753,14 @@ type messageReader struct {
 }
 
 
+func (c *Conn) NextReader() (messageType int,r io.Reader , err error){
+	// 读取继续帧的数据
+
+
+
+}
+
+
 func (message *messageReader) Close() error{
 	return nil
 }
@@ -783,12 +791,14 @@ func (c *Conn) PongHandler () func(text string ) error {
 
 
 func (c *Conn) handleProtocolError(message string) error {
-	return nil
+	// 错误协议
+    c.WriteControl(CloseMessage,FormatCloseMeaasge(CloseProtocolError,message),time.Now().Add(writeWait))
+	return errors.New("websocket: " + message)
 }
 
 func (c *Conn) SetCloseHandler( h func(code int ,text string) error) {
 	//设置关闭帧函数
-	// TODO 这个写法很经典啊,匿名函数
+	//  这个写法很经典啊,匿名函数
 	 if h == nil {
 	 	h = func(code int ,text string) error {
 	 		message := FormatCloseMeaasge(code,"")
