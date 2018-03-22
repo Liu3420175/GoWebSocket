@@ -61,6 +61,7 @@ const (
 	maxFrameHeaderSize         = 2 + 8 + 4  //not inculde payload data,Fixde header + data max length + masking key
     maxControlFramePayloadSize = 125  // RFC Section 5.2, controlframe payloadsize <= 125, and can not be cut
 
+	writeWait = time.Second
     defaultReadBufferSize  = 4096
     defaultWriteBuffersize = 4096
 
@@ -421,7 +422,7 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 	}
 
 	data_len := len(data)
-    if data_len > maxControlFramePayloadSize {//控制信息不能有继续帧
+    if data_len > maxControlFramePayloadSize {//控制帧数据长度不能超过125
     	return errInvalidControlFrame
 	}
 
@@ -451,7 +452,7 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 		}
 	}
 
-	timer := time.NewTimer(d) //timer
+	timer := time.NewTimer(d) //timer 定时器
 	select { // multiplex,can recept or send
 	case <-c.mu: //recept
 		timer.Stop()
@@ -477,7 +478,7 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 	}
 
 	if messageType == CloseMessage {
-		c.WriteFatal(ErrCloseSent)
+		c.WriteFatal(ErrCloseSent) // 如果发送了关闭帧，就不能再发送其它的数据帧
 	}
     return err
 }
@@ -767,30 +768,72 @@ func (c *Conn) setReadLimit(limit int64) {
 }
 
 
-func (c *Conn) CloseHandler() func(code int ,text string) error {
+func (c *Conn) CloseHandler() func(code int ,text string) error { //函数的返回值可以是函数
 	return c.handleClose
 }
+
+
+func (c *Conn) PingHandler() func (text string) error {
+	return c.handlePing
+}
+
+func (c *Conn) PongHandler () func(text string ) error {
+	return c.handlePong
+}
+
 
 func (c *Conn) handleProtocolError(message string) error {
 	return nil
 }
 
 func (c *Conn) SetCloseHandler( h func(code int ,text string) error) {
+	//设置关闭帧函数
+	// TODO 这个写法很经典啊,匿名函数
 	 if h == nil {
 	 	h = func(code int ,text string) error {
 	 		message := FormatCloseMeaasge(code,"")
-
+            err := c.WriteControl(CloseMessage,message,time.Now().Add(writeWait))
+            return err
 		}
 	 }
+	 c.handleClose = h
 }
 
 
+func (c *Conn) SetPingHandler(h func(text string) error) {
+	if h == nil {
+		h = func(message string) error {
+			err := c.WriteControl(PingMessage,[]byte(message),time.Now().Add(writeWait))
+			if err == ErrCloseSent {// 如果早已经接受到关闭帧，则不需要再发送Pong帧
+				return nil
+			}else if e, ok := err.(net.Error); ok && e.Temporary() {
+				return nil
+			}
+			return err
+		}
+	}
+    c.handlePing = h
+}
+
+
+func (c *Conn) SetPongHandler (h func(text string) error) {
+	if h == nil {
+		h = func(message string) error {
+			//err := c.WriteControl(PongMessage,[]byte(message),time.Now().Add(writeWait))
+            return nil
+		}
+	}
+	c.handlePong = h
+}
+
 func FormatCloseMeaasge(closeCode int,text string) []byte {
-	//格式化关闭状态码
+	//格式化关闭状态码，关闭帧可以包含一个内容体即帧的应用数据部分，指示关闭的原因
+	// 内容体头两个字节是无符号整数，网络字节序，也就是状态码
+	//后面就是关闭原因解释
 	if closeCode == CloseNoStatusReceived {
 		return []byte{}
 	}
-	buf := make([]byte,len(text) +2)
+	buf := make([]byte,len(text) +2) // apply buffer
 	binary.BigEndian.PutUint16(buf,uint16(closeCode))
 	copy(buf[2:], text)
 	return buf
